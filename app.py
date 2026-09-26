@@ -4,12 +4,11 @@ from PIL import Image
 import json
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 
-# ==========================================
-# 1. KONFIGURASI HALAMAN & TEMA STREAMLIT
-# ==========================================
+# ---------------------------------------------------------
+# 1. KONFIGURASI HALAMAN & STATE
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="Global AI E-Waste Detector Pro",
     page_icon="⚡",
@@ -17,247 +16,218 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS untuk Tampilan Modern & Premium
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #0e1117;
-        color: #ffffff;
-    }
-    .metric-card {
-        background-color: #1e222d;
-        border-radius: 12px;
-        padding: 20px;
-        border: 1px solid #2e3440;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
-    .hazard-high {
-        color: #ff4b4b;
-        font-weight: bold;
-    }
-    .hazard-medium {
-        color: #ffa726;
-        font-weight: bold;
-    }
-    .hazard-low {
-        color: #66bb6a;
-        font-weight: bold;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Inisialisasi State Riwayat
 if "detection_history" not in st.session_state:
     st.session_state.detection_history = []
 
-# ==========================================
-# 2. SIDEBAR - PENGATURAN API & KONFIGURASI
-# ==========================================
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/electronic-circuit.png", width=80)
-    st.title("⚡ AI Core Settings")
-    st.caption("Universal E-Waste Detection Engine v4.0")
-    
-    # Input API Key Google Gemini
-    api_key = st.text_input(
-        "Masukkan Gemini API Key:", 
-        type="password", 
-        help="Dapatkan API Key gratis di https://aistudio.google.com/"
-    )
-    
-    st.markdown("---")
-    st.subheader("🌐 Standar Klasifikasi")
-    st.info("Menggunakan standar **UN Global E-Waste Monitor (ITU / UNEP)** untuk klasifikasi 6 kategori e-waste dunia.")
-    
-    st.markdown("---")
-    st.markdown("Developed with Streamlit & Gemini Vision Engine")
+# ---------------------------------------------------------
+# 2. FUNGSI AMBIL DAFTAR MODEL AKTIF DARI GOOGLE API
+# ---------------------------------------------------------
+def get_available_gemini_models(api_key):
+    try:
+        genai.configure(api_key=api_key)
+        models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                models.append(name)
+        return models, None
+    except Exception as e:
+        return [], str(e)
 
-# ==========================================
-# 3. FUNGSI ANALISIS VISION AI (ENGINE)
-# ==========================================
-def analyze_ewaste_universal(image, key):
+# ---------------------------------------------------------
+# 3. SIDEBAR (KONFIGURASI API KEY & PILIHAN MODEL)
+# ---------------------------------------------------------
+with st.sidebar:
+    st.title("⚡ AI Core Settings")
+    st.caption("Universal E-Waste Detection System")
+    
+    api_key = st.text_input("Masukkan Gemini API Key:", type="password", help="Dapatkan API Key dari Google AI Studio")
+    
+    selected_model = None
+    if api_key:
+        with st.spinner("Memeriksa model aktif di akun kamu..."):
+            avail_models, fetch_err = get_available_gemini_models(api_key)
+            if avail_models:
+                st.success(f"Ditemukan {len(avail_models)} model aktif!")
+                selected_model = st.selectbox("Model Gemini Terdeteksi:", avail_models, index=0)
+            else:
+                st.warning("⚠️ Tidak dapat mengambil daftar model. Memakai fallback standar.")
+                selected_model = "gemini-3.8-flash"
+    else:
+        st.info("💡 Tempelkan API Key kamu di atas untuk mengaktifkan sistem.")
+        selected_model = "gemini-3.8-flash"
+        
+    st.markdown("---")
+    st.markdown("### 📋 Standar Klasifikasi")
+    st.info("Menggunakan pedoman **UN Global E-Waste Monitor** untuk identifikasi bahaya dan daur ulang sampah elektronik.")
+    st.markdown("---")
+    st.caption("v3.1 Pro — Gemini 3.8 Ready")
+
+# ---------------------------------------------------------
+# 4. FUNGSI ANALISIS GAMBAR (GEMINI 3.8 FLASH)
+# ---------------------------------------------------------
+def analyze_ewaste_smart(image, key, model_name):
     genai.configure(api_key=key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = """
-    Bertindaklah sebagai Ahli Pengolahan Sampah Elektronik (E-Waste Specialist) dan Metalurgi Tingkat Dunia.
-    Analisis gambar ini dengan cermat dan berikan output strictly dalam format JSON tanpa markdown formatting lain.
+    Bertindaklah sebagai Ahli Pengolahan Sampah Elektronik (E-Waste Specialist) berstandar Internasional.
+    Analisis gambar ini dengan teliti dan berikan output STRICTLY dalam format JSON murni tanpa markdown formatting di luar JSON.
 
-    Struktur JSON yang harus dikembalikan:
+    Struktur JSON yang wajib dihasilkan:
     {
-        "nama_objek": "Nama spesifik komponen/perangkat yang terdeteksi",
-        "kategori_un": "Salah satu dari: [1. Temperature exchange equipment, 2. Screens & monitors, 3. Lamps, 4. Large equipment, 5. Small equipment, 6. Small IT and telecommunication equipment]",
-        "deskripsi": "Penjelasan detail mengenai objek ini",
+        "nama_objek": "Nama spesifik perangkat/komponen elektronik pada gambar",
+        "kategori_un": "Salah satu dari 6 Kategori UN E-Waste (1. Temperature Exchange Equipment, 2. Screens & Monitors, 3. Lamps, 4. Large Equipment, 5. Small Equipment, 6. Small IT & Telecommunication)",
+        "deskripsi": "Deskripsi mendalam mengenai objek yang teridentifikasi",
         "tingkat_bahaya": "Tinggi / Sedang / Rendah",
-        "skor_bahaya": 1-10 (angka),
-        "bahan_berbahaya": ["Daftar senyawa/logam beracun seperti Lead, Mercury, Cadmium, BFR, Lithium, dll."],
+        "skor_bahaya": 8,
+        "bahan_berbahaya": ["Contoh: Timbal", "Raksa", "Kadmium", "CFC/Freon"],
         "potensi_logam_mulia": {
-            "Emas (Au)": "Ada / Tidak ada / Sangat Tinggi",
-            "Perak (Ag)": "Ada / Tidak ada",
-            "Tembaga (Cu)": "Ada / Tidak ada",
-            "Litium/Kobal": "Ada / Tidak ada"
+            "Emas (Au)": "Ada / Tidak ada / Tinggi",
+            "Perak (Ag)": "Ada / Tidak ada / Sedang",
+            "Tembaga (Cu)": "Ada / Tinggi"
         },
-        "komponen_utama": ["Daftar 3-5 komponen penyusun objek ini"],
         "instruksi_penanganan": [
-            "Langkah 1 aman membongkar/memilah",
-            "Langkah 2 cara daur ulang yang benar",
-            "Langkah 3 pencegahan bahaya kimia/fisik"
+            "Langkah 1 penanganan aman",
+            "Langkah 2 pemisahan komponen",
+            "Langkah 3 opsi pembuangan/daur ulang"
         ],
-        "dapat_didaur_ulang_persen": 0-100 (angka integer)
+        "dapat_didaur_ulang_persen": 75
     }
     """
     
+    # Urutan percobaan model dengan mengutamakan versi 3.8 terbaru
+    models_to_try = [model_name]
+    fallback_options = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    for fb in fallback_options:
+        if fb not in models_to_try:
+            models_to_try.append(fb)
+            
+    response = None
+    last_error = ""
+    used_model = ""
+
+    for m_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(m_name)
+            res = model.generate_content([prompt, image])
+            if res and res.text:
+                response = res
+                used_model = m_name
+                break
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    if response is None:
+        return None, None, f"Gagal memproses gambar. Detail error: {last_error}"
+
     try:
-        response = model.generate_content([prompt, image])
-        # Cleaning response text jika mengandung markdown ```json
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_text)
-        return data, None
+        parsed_data = json.loads(clean_text)
+        return parsed_data, used_model, None
     except Exception as e:
-        return None, str(e)
+        return None, used_model, f"Gagal membaca format JSON dari AI: {str(e)}"
 
-# ==========================================
-# 4. TAMPILAN UTAMA & NAVIGASI TAB
-# ==========================================
+# ---------------------------------------------------------
+# 5. TAMPILAN UTAMA APLIKASI
+# ---------------------------------------------------------
 st.title("⚡ Global AI E-Waste Detector Pro")
-st.subheader("Sistem Deteksi & Analisis Sampah Elektronik Universal Berbasis Vision AI")
+st.markdown("Sistem Pengenal & Analisis Bahaya Sampah Elektronik Berbasis Vision AI")
 
-tab1, tab2, tab3 = st.tabs(["🔍 Deteksi Kamera & Unggah", "📊 Dashboard & Riwayat", "📚 Panduan Kategori PBB"])
+tab1, tab2 = st.tabs(["🔍 Analisis E-Waste", "📊 Dashboard & Riwayat"])
 
-# ------------------------------------------
-# TAB 1: DETEKSI SENSING
-# ------------------------------------------
+# --- TAB 1: ANALISIS ---
 with tab1:
-    col_input, col_result = st.columns([1, 1.2])
+    col_input, col_output = st.columns([1, 1.2], gap="medium")
     
     with col_input:
-        st.markdown("### 1. Masukkan Gambar E-Waste")
-        source = st.radio("Pilih Sumber Input:", ["Kamera Langsung 📷", "Unggah Berkas Gambar 📁"])
+        st.subheader("1. Pilih Sumber Gambar")
+        source = st.radio("Metode Input:", ["Kamera Langsung 📷", "Unggah Berkas 📁"], horizontal=True)
         
         input_image = None
         if "Kamera" in source:
-            camera_file = st.camera_input("Ambil Foto E-Waste")
-            if camera_file:
-                input_image = Image.open(camera_file)
+            cam_file = st.camera_input("Ambil Foto Perangkat E-Waste")
+            if cam_file:
+                input_image = Image.open(cam_file)
         else:
-            uploaded_file = st.file_uploader("Pilih file gambar (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"])
+            uploaded_file = st.file_uploader("Pilih gambar perangkat (JPG, PNG, WEBP):", type=["jpg", "jpeg", "png", "webp"])
             if uploaded_file:
                 input_image = Image.open(uploaded_file)
-        
+                
         if input_image:
-            st.image(input_image, caption="Gambar yang Diambil", use_container_width=True)
-            btn_analyze = st.button("🚀 Jalankan Analisis AI Universal", type="primary", use_container_width=True)
-    
-    with col_result:
-        st.markdown("### 2. Hasil Deteksi & Analisis Mendalam")
+            st.image(input_image, caption="Gambar Siap Dianalisis", use_container_width=True)
+            analyze_btn = st.button("🚀 Jalankan Analisis AI Universal", type="primary", use_container_width=True)
+
+    with col_output:
+        st.subheader("2. Hasil Deteksi & Analisis Mendalam")
         
-        if 'btn_analyze' in locals() and btn_analyze:
+        if 'analyze_btn' in locals() and analyze_btn:
             if not api_key:
-                st.error("⚠️ Harap masukkan Gemini API Key di sidebar sebelah kiri terlebih dahulu!")
+                st.error("⚠️ **API Key Belum Diisi!** Masukkan Gemini API Key pada menu sidebar di sebelah kiri.")
             elif input_image is None:
-                st.warning("⚠️ Ambil foto atau unggah gambar terlebih dahulu.")
+                st.warning("⚠️ **Gambar Belum Ada!** Ambil foto atau unggah gambar terlebih dahulu.")
             else:
-                with st.spinner("🧠 AI sedang menganalisis struktur fisik, komponen beracun, dan potensi logam mulia..."):
-                    result, err = analyze_ewaste_universal(input_image, api_key)
+                target_model = selected_model if selected_model else "gemini-3.8-flash"
+                with st.spinner(f"🧠 Menganalisis gambar menggunakan model `{target_model}`..."):
+                    data, active_model, err = analyze_ewaste_smart(input_image, api_key, target_model)
                     
                     if err:
-                        st.error(f"Gagal melakukan analisis: {err}")
+                        st.error(f"❌ {err}")
                     else:
-                        # Simpan ke riwayat
-                        record = {
+                        st.session_state.detection_history.append({
                             "waktu": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "nama": result["nama_objek"],
-                            "kategori": result["kategori_un"],
-                            "bahaya": result["tingkat_bahaya"],
-                            "daur_ulang": result["dapat_didaur_ulang_persen"]
-                        }
-                        st.session_state.detection_history.append(record)
+                            "nama": data.get("nama_objek", "Tidak diketahui"),
+                            "kategori": data.get("kategori_un", "Umum"),
+                            "bahaya": data.get("tingkat_bahaya", "Sedang"),
+                            "daur_ulang": data.get("dapat_didaur_ulang_persen", 0),
+                            "model": active_model
+                        })
                         
-                        # Tampilan Hasil Deteksi
-                        st.success(f"✅ Terdeteksi: **{result['nama_objek']}**")
+                        st.success(f"✅ **Berhasil Dianalisis** (Model Digunakan: `{active_model}`)")
                         
-                        # Metric Cards
                         m1, m2, m3 = st.columns(3)
-                        with m1:
-                            st.metric("Kategori UN", result["kategori_un"].split(".")[1] if "." in result["kategori_un"] else result["kategori_un"])
-                        with m2:
-                            hazard_color = "🔴" if result["tingkat_bahaya"] == "Tinggi" else ("🟡" if result["tingkat_bahaya"] == "Sedang" else "🟢")
-                            st.metric("Tingkat Bahaya", f"{hazard_color} {result['tingkat_bahaya']}")
-                        with m3:
-                            st.metric("Potensi Daur Ulang", f"{result['dapat_didaur_ulang_persen']}%")
+                        m1.metric("Perangkat Terdeteksi", data.get("nama_objek", "-"))
+                        m2.metric("Tingkat Bahaya", data.get("tingkat_bahaya", "-"), delta=f"Skor {data.get('skor_bahaya', 0)}/10", delta_color="inverse")
+                        m3.metric("Potensi Daur Ulang", f"{data.get('dapat_didaur_ulang_persen', 0)}%")
                         
                         st.markdown("---")
-                        st.markdown(f"**📝 Deskripsi Objektif:**  \n{result['deskripsi']}")
+                        st.markdown(f"**📂 Kategori UN E-Waste:** `{data.get('kategori_un', '-')}`")
+                        st.markdown(f"**📝 Deskripsi Objek:** {data.get('deskripsi', '-')}")
                         
-                        # Tab detail bahan
-                        d_tab1, d_tab2, d_tab3 = st.tabs(["☣️ Bahan Berbahaya", "💎 Logam Mulia", "🛠️ Cara Penanganan"])
-                        
-                        with d_tab1:
-                            st.write(f"**Skor Bahaya Kimia:** {result['skor_bahaya']}/10")
-                            st.progress(result['skor_bahaya'] / 10)
-                            st.write("**Kandungan Toksisitas Terdeteksi:**")
-                            for toxin in result["bahan_berbahaya"]:
-                                st.write(f"- ⚠️ {toxin}")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown("🚨 **Bahan / Zat Berbahaya:**")
+                            for bahan in data.get("bahan_berbahaya", []):
+                                st.write(f"- {bahan}")
                                 
-                        with d_tab2:
-                            st.write("**Estimasi Logam Mulia & Material Berharga:**")
-                            for metal, status in result["potensi_logam_mulia"].items():
-                                st.write(f"- **{metal}**: {status}")
+                        with col_b:
+                            st.markdown("💎 **Potensi Logam Mulia:**")
+                            lm = data.get("potensi_logam_mulia", {})
+                            for k, v in lm.items():
+                                st.write(f"- **{k}:** {v}")
                                 
-                        with d_tab3:
-                            st.write("**Langkah Daur Ulang & Keamanan:**")
-                            for idx, step in enumerate(result["instruksi_penanganan"], 1):
-                                st.write(f"{idx}. {step}")
+                        st.markdown("---")
+                        st.markdown("🛠️ **Instruksi Penanganan & Daur Ulang Aman:**")
+                        for idx, step in enumerate(data.get("instruksi_penanganan", []), 1):
+                            st.write(f"**{idx}.** {step}")
 
-# ------------------------------------------
-# TAB 2: DASHBOARD & ANALITIK
-# ------------------------------------------
+# --- TAB 2: DASHBOARD ---
 with tab2:
-    st.markdown("### 📊 Dashboard Statistik Riwayat Deteksi")
+    st.subheader("📊 Rekapitulasi Deteksi E-Waste")
     
-    if len(st.session_state.detection_history) == 0:
-        st.info("Belum ada data deteksi. Lakukan analisis gambar di Tab 1 terlebih dahulu!")
-    else:
-        df_history = pd.DataFrame(st.session_state.detection_history)
+    if len(st.session_state.detection_history) > 0:
+        df = pd.DataFrame(st.session_state.detection_history)
+        st.dataframe(df, use_container_width=True)
         
         c1, c2 = st.columns(2)
-        
         with c1:
-            st.markdown("##### Distribusi Kategori E-Waste")
-            fig_cat = px.pie(df_history, names="kategori", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig_cat, use_container_width=True)
+            fig_pie = px.pie(df, names="kategori", title="Distribusi Kategori UN E-Waste", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
             
         with c2:
-            st.markdown("##### Tingkat Risiko Bahaya E-Waste")
-            fig_hazard = px.bar(df_history, x="bahaya", color="bahaya", 
-                                color_discrete_map={"Tinggi": "#ff4b4b", "Sedang": "#ffa726", "Rendah": "#66bb6a"})
-            st.plotly_chart(fig_hazard, use_container_width=True)
-            
-        st.markdown("##### Tabel Riwayat Lengkap")
-        st.dataframe(df_history, use_container_width=True)
-        
-        # Download Data CSV
-        csv_data = df_history.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Unduh Laporan Deteksi (CSV)",
-            data=csv_data,
-            file_name="laporan_deteksi_ewaste.csv",
-            mime="text/csv"
-        )
+            fig_bar = px.bar(df, x="nama", y="daur_ulang", color="bahaya", title="Persentase Daur Ulang per Objek")
+            st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("Belum ada riwayat deteksi pada sesi ini. Lakukan deteksi di Tab 1 untuk melihat dashboard.")
 
-# ------------------------------------------
-# TAB 3: PANDUAN KATEGORI E-WASTE PBB
-# ------------------------------------------
-with tab3:
-    st.markdown("### 📚 6 Kategori E-Waste Menurut UN Global E-Waste Monitor")
-    
-    cat_data = [
-        {"Kategori": "1. Temperature Exchange Equipment", "Contoh": "Kulkas, AC, Freezer, Heat Pump.", "Risiko": "Gas CFC/HCFC yang merusak lapisan ozon."},
-        {"Kategori": "2. Screens & Monitors", "Contoh": "TV, Monitor Komputer, Laptop, Tablet.", "Risiko": "Timbal (CRT), Merkuri (LCD backlight)."},
-        {"Kategori": "3. Lamps", "Contoh": "Lampu Neon (CFL), Lampu LED, Lampu HID.", "Risiko": "Uap Merkuri beracun saat pecah."},
-        {"Kategori": "4. Large Equipment", "Contoh": "Mesin Cuci, Oven, Panel Surya, Mesin Fotokopi.", "Risiko": "Kapasitor daya tinggi, PCB besar."},
-        {"Kategori": "5. Small Equipment", "Contoh": "Vacuum Cleaner, Microwave, Toaster, Alat Cukur.", "Risiko": "Plastik BFR, komponen listrik campuran."},
-        {"Kategori": "6. Small IT & Telecom", "Contoh": "HP, Router, Printer, Kabel, Headphone.", "Risiko": "Baterai Lithium-ion, komponen mikro terintegrasi."}
-    ]
-    
-    st.table(pd.DataFrame(cat_data))
+
